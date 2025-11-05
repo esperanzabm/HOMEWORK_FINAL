@@ -22,5 +22,5 @@ Aplicación web desarrollada en **Flask (Python)** con conexión a **MongoDB**, 
 
 ### 1️⃣ Clonar el repositorio
 ```bash
-git clone https://github.com/esperanzabm/MiFlaskApp.git
+git clone https://github.com/esperanzabm/HOMEWORK_SIMPLEFLASK.git
 cd MiFlaskApp/SimpleFlaskHomework
