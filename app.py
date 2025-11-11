@@ -5,19 +5,31 @@ from flask_jwt_extended import (
 )
 from functools import wraps
 import datetime
-
-app = Flask(__name__)
-
 from dotenv import load_dotenv
 import os
 
+from project.utils.mongo_config import init_mongo
+
+# Importa el init_mongo 
+from project.utils.mongo_config import init_mongo
+
+app = Flask(__name__, template_folder="project/templates")
+
+from project.routes.plants_routes import plants_bp
+app.register_blueprint(plants_bp)
+
+# .env
 load_dotenv()
 app.config["MONGO_URI"] = os.getenv("MONGO_URI")
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = datetime.timedelta(hours=1)
 
-from mongo_config import init_mongo
+# Mongo + JWT
 mongo = init_mongo(app)
+jwt = JWTManager(app)
+app.config["mongo"] = mongo
 
+# ------- Semilla de usuarios en MongoDB -------
 def seed_users():
     users_col = mongo.db.users
     if users_col.count_documents({}) == 0:
@@ -29,58 +41,27 @@ def seed_users():
     else:
         print("ℹ️ Usuarios ya existen en MongoDB")
 
-# Ejecutar semilla al iniciar
 seed_users()
 
-# CONFIG
-app.config["JWT_ACCESS_TOKEN_EXPIRES"] = datetime.timedelta(hours=1)
-
-jwt = JWTManager(app)
-
-# Usuarios "quemados" (demo). En producción, usar DB.
-USERS = {
-    "client": {
-        "username": "client",
-        "password_hash": generate_password_hash("clientpass"),
-        "roles": ["client"]
-    },
-    "manager": {
-        "username": "manager",
-        "password_hash": generate_password_hash("managerpass"),
-        "roles": ["manager"]
-    },
-    "admin": {
-        "username": "admin",
-        "password_hash": generate_password_hash("adminpass"),
-        "roles": ["admin"]
-    }
-}
-
-# -------------------------
-# Handlers personalizados de errores JWT (respuestas 4XX)
-# -------------------------
+# ------- Handlers JWT -------
 @jwt.unauthorized_loader
 def missing_token_callback(error_string):
-    # Cuando no hay header Authorization: Bearer ...
     return jsonify({"msg": "Token no proporcionado (Authorization header faltante)", "error": error_string}), 401
 
 @jwt.invalid_token_loader
 def invalid_token_callback(reason):
-    # Token mal formado o firma inválida
     return jsonify({"msg": "Token inválido", "error": reason}), 422
 
 @jwt.expired_token_loader
 def expired_token_callback(header, payload):
     return jsonify({"msg": "Token expirado"}), 401
 
-# -------------------------
-# Decorador para roles
-# -------------------------
+# ------- Decorador de roles -------
 def role_required(allowed_roles):
     """
     Uso:
-    @role_required(['admin'])  # solo admin
-    @role_required(['manager','admin'])  # manager o admin
+    @role_required(['admin'])
+    @role_required(['manager','admin'])
     """
     def wrapper(fn):
         @wraps(fn)
@@ -88,16 +69,13 @@ def role_required(allowed_roles):
         def decorator(*args, **kwargs):
             claims = get_jwt()
             roles = claims.get("roles", [])
-            # roles debe ser lista
             if not any(r in roles for r in allowed_roles):
                 return jsonify({"msg": "Rol no autorizado"}), 403
             return fn(*args, **kwargs)
         return decorator
     return wrapper
 
-# -------------------------
-# Endpoints
-# -------------------------
+# ------- Endpoints -------
 @app.route("/")
 def index():
     return jsonify(message="Hola — Flask con JWT listo y control de roles"), 200
@@ -116,7 +94,6 @@ def login():
 
     # Buscar usuario en MongoDB
     user = mongo.db.users.find_one({"username": username})
-
     if not user or not check_password_hash(user["password"], password):
         return jsonify({"msg": "Credenciales inválidas"}), 401
 
@@ -137,8 +114,7 @@ def whoami():
 
 # Admin only
 @app.route("/admin-only", methods=["GET"])
-@jwt_required()
-@role_required(['admin'])
+@role_required(['admin'])  # ya incluye @jwt_required dentro del decorador
 def admin_only():
     return jsonify({"msg": "Área de administrador — acceso concedido ✅"}), 200
 
@@ -148,7 +124,7 @@ def admin_only():
 def manager_area():
     return jsonify({"msg": "Área de manager — acceso concedido"}), 200
 
-# Add user (only admin) - POST /users { username, password, roles: [..] }
+# Crear usuario (solo admin)
 @app.route("/users", methods=["POST"])
 @role_required(['admin'])
 def add_user():
@@ -165,7 +141,6 @@ def add_user():
 
     users_col = mongo.db.users
 
-    # ¿ya existe?
     if users_col.find_one({"username": username}):
         return jsonify({"msg": "Usuario ya existe"}), 400
 
@@ -180,23 +155,22 @@ def add_user():
         "user": {"username": username, "roles": roles}
     }), 201
 
-    # Devolvemos info sin password
-    return jsonify({
-        "msg": "Usuario creado",
-        "user": {"username": username, "roles": roles}
-    }), 201
-
+# Vista con render (admin/manager)
 @app.route("/users-view", methods=["GET"])
-@role_required(['admin', 'manager'])  # Solo admin o manager pueden ver la página
+@role_required(['admin', 'manager'])
 def users_view():
-    # Trae solo username y roles (omite _id para evitar problemas de serialización)
     users = list(mongo.db.users.find({}, {"_id": 0, "username": 1, "roles": 1}))
     return render_template("users.html", users=users)
 
+# Vista pública (sin JWT)
 @app.route("/public-users")
 def public_users():
     users = list(mongo.db.users.find({}, {"_id": 0, "username": 1, "roles": 1}))
     return render_template("users.html", users=users)
 
+@app.get("/__routes__")
+def _routes_debug():
+    return jsonify(sorted([f"{r.methods} {r.rule}" for r in app.url_map.iter_rules()]))
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, use_reloader=False)
